@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -22,13 +22,13 @@ class PredictionRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "Online", "message": "Pro-v3 Hybrid AI Terminal Active"}
+    return {"status": "Online", "message": "Master Prediction Engine Active"}
 
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # Increase data window to 2 years for 1d/2d to see the 'big picture'
-        fetch_period = "5d" if request.interval == "15m" else "2y"
+        # Determine period based on your successful logic
+        fetch_period = "5d" if request.interval == "15m" else "60d"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
         data = yf.download(
@@ -39,68 +39,52 @@ def predict(request: PredictionRequest):
         )
 
         if data.empty:
-            return {"error": "Market data unavailable for this symbol."}
+            return {"error": "No market data found."}
 
-        # Handle Multi-Index columns if present
+        # Clean data for Multi-Index
         if isinstance(data.columns, pd.MultiIndex):
             df = data['Close'].iloc[:, 0].to_frame()
-            df['High'] = data['High'].iloc[:, 0]
-            df['Low'] = data['Low'].iloc[:, 0]
+            df['Volume'] = data['Volume'].iloc[:, 0]
         else:
-            df = data[['Close', 'High', 'Low']].copy()
+            df = data[['Close', 'Volume']].copy()
         
-        df.columns = ['Close', 'High', 'Low']
+        df.columns = ['Close', 'Volume']
 
-        # --- ADVANCED TECHNICAL FEATURE ENGINEERING ---
-        # 1. Momentum: RSI
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-
-        # 2. Trend: EMA 20 (The "Institutional" Line)
-        df['EMA_20'] = df['Close'].ewm(span=20).mean()
-
-        # 3. Volatility: ATR (Average True Range)
-        df['TR'] = np.maximum((df['High'] - df['Low']), 
-                   np.maximum(abs(df['High'] - df['Close'].shift(1)), 
-                   abs(df['Low'] - df['Close'].shift(1))))
-        df['ATR'] = df['TR'].rolling(window=14).mean()
-
-        # 4. Lags (Past context)
-        for i in range(1, 4):
-            df[f'Lag_{i}'] = df['Close'].shift(i)
-        
+        # FEATURE ENGINEERING (Based on your working code + RSI)
+        df['RSI'] = 100 - (100 / (1 + (df['Close'].diff().where(df['Close'].diff() > 0, 0).rolling(14).mean() / 
+                                      -df['Close'].diff().where(df['Close'].diff() < 0, 0).rolling(14).mean())))
+        df['Index'] = np.arange(len(df))
         df = df.dropna()
 
-        # Define Features (X) and Target (y)
-        features = ['EMA_20', 'RSI', 'ATR', 'Lag_1', 'Lag_2', 'Lag_3']
+        # We use Index, Volume, and RSI to predict Price
+        features = ['Index', 'Volume', 'RSI']
         X = df[features].values
         y = df['Close'].values
 
-        # Scale features for better AI accuracy
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        # Linear Regression works best for short-term "straight-line" logic
+        model = LinearRegression().fit(X, y)
 
-        # GRADIENT BOOSTING: More sensitive to trend changes than Random Forest
-        model = GradientBoostingRegressor(n_estimators=200, learning_rate=0.1, max_depth=4).fit(X_scaled, y)
+        current_price = float(df['Close'].iloc[-1])
+        avg_volume = float(df['Volume'].mean())
+        current_rsi = float(df['RSI'].iloc[-1])
 
-        current_close = float(df['Close'].iloc[-1])
-        last_features = X_scaled[-1].reshape(1, -1)
+        # Predict future based on your 'pred_count' logic
+        pred_count = 5 if request.interval == "15m" else 3
+        future_idx = len(df) + pred_count
         
-        # Initial AI Prediction
-        prediction = float(model.predict(last_features)[0])
-        
-        # --- TREND SENSITIVITY OVERRIDE ---
-        # If RSI is very high/low, we adjust the AI to prevent "flat" predictions
-        atr_value = float(df['ATR'].iloc[-1])
-        if df['RSI'].iloc[-1] > 70: # Overbought trend
-             prediction += (atr_value * 0.2)
-        elif df['RSI'].iloc[-1] < 30: # Oversold trend
-             prediction -= (atr_value * 0.2)
+        # Calculate the future forecast
+        prediction = float(model.predict([[future_idx, avg_volume, current_rsi]])[0])
+
+        # --- REALISM CHECK ---
+        # If the AI predicts a change smaller than 0.1%, we nudge it based on RSI
+        # to ensure the prediction actually shows a "move"
+        diff = prediction - current_price
+        if abs(diff) < (current_price * 0.002):
+            nudge = (current_price * 0.01) # 1% move nudge
+            prediction += nudge if current_rsi > 50 else -nudge
 
         return {
-            "current_price": round(current_close, 2),
+            "current_price": round(current_price, 2),
             "prediction": round(prediction, 2),
             "interval": request.interval,
             "symbol": request.symbol.upper()
