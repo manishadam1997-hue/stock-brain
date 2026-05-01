@@ -7,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Enable CORS for the Flutter application
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,7 +16,7 @@ app.add_middleware(
 
 class PredictionRequest(BaseModel):
     symbol: str
-    interval: str  # Options: '15m', '1d', '2d'
+    interval: str 
 
 @app.get("/")
 def home():
@@ -26,12 +25,9 @@ def home():
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # Determine data windows based on selection
-        # 15m needs a narrow 1-day window; 1d/2d needs a wider 1-month window
         fetch_period = "1d" if request.interval == "15m" else "1mo"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
-        # Download market data
         data = yf.download(
             tickers=request.symbol, 
             period=fetch_period, 
@@ -40,10 +36,18 @@ def predict(request: PredictionRequest):
         )
 
         if data.empty:
-            return {"error": "Symbol not found or market closed for this interval."}
+            return {"error": "Symbol not found or market closed."}
 
-        # AI Prediction Logic
-        df = data[['Close']].copy()
+        # --- FIX FOR THE 'SERIES' ERROR ---
+        # If columns are layered (MultiIndex), we grab just the 'Close' column for our ticker
+        if isinstance(data.columns, pd.MultiIndex):
+            close_data = data['Close'].iloc[:, 0]
+        else:
+            close_data = data['Close']
+        
+        # Convert to a clean DataFrame for the AI
+        df = pd.DataFrame(close_data)
+        df.columns = ['Close']
         df['S_1'] = df['Close'].shift(1)
         df = df.dropna()
 
@@ -51,13 +55,15 @@ def predict(request: PredictionRequest):
         y = df['Close'].values
         model = LinearRegression().fit(X, y)
 
+        # Get the very last price as a single number
         current_price = float(df['Close'].iloc[-1])
         
-        # Steps determine how far out the prediction goes (2 steps for '2d')
         steps = 2 if request.interval == "2d" else 1
         prediction = current_price
         for _ in range(steps):
-            prediction = float(model.predict([[prediction]])[0])
+            # Ensure prediction stays a single float
+            pred_array = model.predict([[prediction]])
+            prediction = float(pred_array[0])
 
         return {
             "current_price": round(current_price, 2),
