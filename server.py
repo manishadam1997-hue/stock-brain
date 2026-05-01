@@ -21,12 +21,12 @@ class PredictionRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "Online", "message": "Pro-v3 Hybrid AI Engine Active"}
+    return {"status": "Online", "message": "Pro-v3 Master Engine Active"}
 
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # 1. Official Ticker Search (Finds symbol for 'apple', 'nifty', etc.)
+        # 1. Ticker Discovery (finds the best match for 'apple', 'nifty', etc.)
         search_results = yf.Search(request.symbol, max_results=1).quotes
         if not search_results:
             return {"error": f"No results for '{request.symbol}'"}
@@ -34,19 +34,19 @@ def predict(request: PredictionRequest):
         ticker_symbol = search_results[0]['symbol']
         stock = yf.Ticker(ticker_symbol)
 
-        # 2. Data Fetching (Optimized periods for 2026 market volatility)
+        # 2. Optimized Data Fetching
         fetch_period = "5d" if request.interval == "15m" else "60d"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
         data = stock.history(period=fetch_period, interval=fetch_interval)
 
         if data.empty:
-            return {"error": "Market data unavailable for this ticker."}
+            return {"error": "No market data found."}
 
         # 3. Feature Engineering (Price + Volume + Momentum)
         df = data[['Close', 'Volume']].copy()
         
-        # Calculate RSI (Relative Strength Index)
+        # RSI Calculation for trend context
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -55,7 +55,7 @@ def predict(request: PredictionRequest):
         df['Index'] = np.arange(len(df))
         df = df.dropna()
 
-        # 4. AI Training Logic
+        # 4. AI Logic: Multi-Factor Linear Regression
         features = ['Index', 'Volume', 'RSI']
         X = df[features].values
         y = df['Close'].values
@@ -65,15 +65,15 @@ def predict(request: PredictionRequest):
         avg_volume = float(df['Volume'].mean())
         current_rsi = float(df['RSI'].iloc[-1])
 
-        # 5. Advanced Forecast (Projecting into the next window)
+        # 5. Forecast Calculation
         pred_count = 5 if request.interval == "15m" else 3
         future_idx = len(df) + pred_count
         prediction = float(model.predict([[future_idx, avg_volume, current_rsi]])[0])
 
-        # Volatility Nudge: If AI is too 'flat', use RSI to forecast the breakout
+        # Dynamic Nudge: Ensures the prediction moves based on RSI momentum
         diff = prediction - current_price
-        if abs(diff) < (current_price * 0.001):
-            nudge = (current_price * 0.015) # 1.5% move nudge
+        if abs(diff) < (current_price * 0.002):
+            nudge = (current_price * 0.012) 
             prediction += nudge if current_rsi > 50 else -nudge
 
         return {
