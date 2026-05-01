@@ -4,7 +4,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -27,7 +26,7 @@ def home():
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # Determine period based on your successful logic
+        # Data periods optimized for your preferred logic
         fetch_period = "5d" if request.interval == "15m" else "60d"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
@@ -41,7 +40,7 @@ def predict(request: PredictionRequest):
         if data.empty:
             return {"error": "No market data found."}
 
-        # Clean data for Multi-Index
+        # Handling Multi-Index ticker data
         if isinstance(data.columns, pd.MultiIndex):
             df = data['Close'].iloc[:, 0].to_frame()
             df['Volume'] = data['Volume'].iloc[:, 0]
@@ -50,37 +49,33 @@ def predict(request: PredictionRequest):
         
         df.columns = ['Close', 'Volume']
 
-        # FEATURE ENGINEERING (Based on your working code + RSI)
+        # FEATURE ENGINEERING: Price, Volume, and RSI context
         df['RSI'] = 100 - (100 / (1 + (df['Close'].diff().where(df['Close'].diff() > 0, 0).rolling(14).mean() / 
                                       -df['Close'].diff().where(df['Close'].diff() < 0, 0).rolling(14).mean())))
         df['Index'] = np.arange(len(df))
         df = df.dropna()
 
-        # We use Index, Volume, and RSI to predict Price
+        # Training on the factors you found most effective: Index, Volume, and RSI
         features = ['Index', 'Volume', 'RSI']
         X = df[features].values
         y = df['Close'].values
 
-        # Linear Regression works best for short-term "straight-line" logic
         model = LinearRegression().fit(X, y)
 
         current_price = float(df['Close'].iloc[-1])
         avg_volume = float(df['Volume'].mean())
         current_rsi = float(df['RSI'].iloc[-1])
 
-        # Predict future based on your 'pred_count' logic
+        # Forecast count per interval
         pred_count = 5 if request.interval == "15m" else 3
         future_idx = len(df) + pred_count
         
-        # Calculate the future forecast
         prediction = float(model.predict([[future_idx, avg_volume, current_rsi]])[0])
 
-        # --- REALISM CHECK ---
-        # If the AI predicts a change smaller than 0.1%, we nudge it based on RSI
-        # to ensure the prediction actually shows a "move"
+        # Logic to ensure the prediction shows a distinct move based on RSI
         diff = prediction - current_price
         if abs(diff) < (current_price * 0.002):
-            nudge = (current_price * 0.01) # 1% move nudge
+            nudge = (current_price * 0.01) 
             prediction += nudge if current_rsi > 50 else -nudge
 
         return {
@@ -90,4 +85,4 @@ def predict(request: PredictionRequest):
             "symbol": request.symbol.upper()
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": f"AI Error: {str(e)}"}
