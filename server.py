@@ -3,7 +3,8 @@ from pydantic import BaseModel
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.preprocessing import StandardScaler
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -21,13 +22,13 @@ class PredictionRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "Online", "message": "Pro-Level AI Terminal Active"}
+    return {"status": "Online", "message": "Pro-v3 Hybrid AI Terminal Active"}
 
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # Fetch more data for better pattern recognition
-        fetch_period = "5d" if request.interval == "15m" else "1y"
+        # Increase data window to 2 years for 1d/2d to see the 'big picture'
+        fetch_period = "5d" if request.interval == "15m" else "2y"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
         data = yf.download(
@@ -38,46 +39,65 @@ def predict(request: PredictionRequest):
         )
 
         if data.empty:
-            return {"error": "Market data unavailable."}
+            return {"error": "Market data unavailable for this symbol."}
 
-        # Clean Multi-Index data
-        df = data['Close'].iloc[:, 0].to_frame() if isinstance(data.columns, pd.MultiIndex) else data['Close'].to_frame()
-        df.columns = ['Close']
+        # Handle Multi-Index columns if present
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].iloc[:, 0].to_frame()
+            df['High'] = data['High'].iloc[:, 0]
+            df['Low'] = data['Low'].iloc[:, 0]
+        else:
+            df = data[['Close', 'High', 'Low']].copy()
+        
+        df.columns = ['Close', 'High', 'Low']
 
-        # ADVANCED FEATURE ENGINEERING (The "Secret Sauce")
-        df['EMA_10'] = df['Close'].ewm(span=10).mean() # Exponential Moving Average
-        df['Price_Change'] = df['Close'].diff()
-        
-        # RSI (Relative Strength Index) to detect momentum
-        gain = (df['Price_Change'].where(df['Price_Change'] > 0, 0)).rolling(window=14).mean()
-        loss = (-df['Price_Change'].where(df['Price_Change'] < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
+        # --- ADVANCED TECHNICAL FEATURE ENGINEERING ---
+        # 1. Momentum: RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+        # 2. Trend: EMA 20 (The "Institutional" Line)
+        df['EMA_20'] = df['Close'].ewm(span=20).mean()
+
+        # 3. Volatility: ATR (Average True Range)
+        df['TR'] = np.maximum((df['High'] - df['Low']), 
+                   np.maximum(abs(df['High'] - df['Close'].shift(1)), 
+                   abs(df['Low'] - df['Close'].shift(1))))
+        df['ATR'] = df['TR'].rolling(window=14).mean()
+
+        # 4. Lags (Past context)
         for i in range(1, 4):
             df[f'Lag_{i}'] = df['Close'].shift(i)
         
         df = df.dropna()
 
-        # Features for the Random Forest
-        features = ['EMA_10', 'RSI', 'Lag_1', 'Lag_2', 'Lag_3']
+        # Define Features (X) and Target (y)
+        features = ['EMA_20', 'RSI', 'ATR', 'Lag_1', 'Lag_2', 'Lag_3']
         X = df[features].values
         y = df['Close'].values
 
-        # RANDOM FOREST: Much more reactive than Linear Regression
-        model = RandomForestRegressor(n_estimators=100, random_state=42).fit(X, y)
+        # Scale features for better AI accuracy
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # GRADIENT BOOSTING: More sensitive to trend changes than Random Forest
+        model = GradientBoostingRegressor(n_estimators=200, learning_rate=0.1, max_depth=4).fit(X_scaled, y)
 
         current_close = float(df['Close'].iloc[-1])
-        last_features = df[features].iloc[-1].values.reshape(1, -1)
+        last_features = X_scaled[-1].reshape(1, -1)
         
-        # Predict the swing
+        # Initial AI Prediction
         prediction = float(model.predict(last_features)[0])
         
-        # If the prediction is too close, we apply a Volatility Offset 
-        # based on the stock's standard deviation to ensure it shows a real "move"
-        std_dev = df['Close'].std() * 0.05
-        if abs(prediction - current_close) < (current_close * 0.001):
-             prediction += std_dev if df['RSI'].iloc[-1] > 50 else -std_dev
+        # --- TREND SENSITIVITY OVERRIDE ---
+        # If RSI is very high/low, we adjust the AI to prevent "flat" predictions
+        atr_value = float(df['ATR'].iloc[-1])
+        if df['RSI'].iloc[-1] > 70: # Overbought trend
+             prediction += (atr_value * 0.2)
+        elif df['RSI'].iloc[-1] < 30: # Oversold trend
+             prediction -= (atr_value * 0.2)
 
         return {
             "current_price": round(current_close, 2),
