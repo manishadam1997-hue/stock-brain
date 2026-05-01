@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import yfinance as yf
 import pandas as pd
+import numpy as np
 from sklearn.linear_model import LinearRegression
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,12 +21,13 @@ class PredictionRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"status": "Online", "message": "Multi-Interval AI Terminal Active"}
+    return {"status": "Online", "message": "Level 2 AI Terminal Active"}
 
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        fetch_period = "1d" if request.interval == "15m" else "1mo"
+        # Determine data period based on interval
+        fetch_period = "2d" if request.interval == "15m" else "3mo"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
         data = yf.download(
@@ -38,35 +40,45 @@ def predict(request: PredictionRequest):
         if data.empty:
             return {"error": "Symbol not found or market closed."}
 
-        # --- FIX FOR THE 'SERIES' ERROR ---
-        # If columns are layered (MultiIndex), we grab just the 'Close' column for our ticker
+        # Clean the data (handling Multi-Index if needed)
         if isinstance(data.columns, pd.MultiIndex):
-            close_data = data['Close'].iloc[:, 0]
+            df = data['Close'].iloc[:, 0].to_frame()
         else:
-            close_data = data['Close']
+            df = data['Close'].to_frame()
         
-        # Convert to a clean DataFrame for the AI
-        df = pd.DataFrame(close_data)
         df.columns = ['Close']
-        df['S_1'] = df['Close'].shift(1)
+
+        # FEATURE ENGINEERING: Give the AI 5 "Lags" and a Moving Average
+        for i in range(1, 6):
+            df[f'Lag_{i}'] = df['Close'].shift(i)
+        
+        df['MA_5'] = df['Close'].rolling(window=5).mean()
         df = df.dropna()
 
-        X = df[['S_1']].values
+        # Define Features (X) and Target (y)
+        features = ['Lag_1', 'Lag_2', 'Lag_3', 'Lag_4', 'Lag_5', 'MA_5']
+        X = df[features].values
         y = df['Close'].values
+
+        # Train the model
         model = LinearRegression().fit(X, y)
 
-        # Get the very last price as a single number
-        current_price = float(df['Close'].iloc[-1])
+        # Get current state for the next prediction
+        current_close = float(df['Close'].iloc[-1])
+        last_features = df[features].iloc[-1].values.reshape(1, -1)
         
+        # Predict 1 step ahead (or 2 for '2d')
         steps = 2 if request.interval == "2d" else 1
-        prediction = current_price
+        prediction = current_close
+        
         for _ in range(steps):
-            # Ensure prediction stays a single float
-            pred_array = model.predict([[prediction]])
-            prediction = float(pred_array[0])
+            prediction = float(model.predict(last_features)[0])
+            # Update 'last_features' for next step (simplified)
+            last_features = np.roll(last_features, 1)
+            last_features[0, 0] = prediction 
 
         return {
-            "current_price": round(current_price, 2),
+            "current_price": round(current_close, 2),
             "prediction": round(prediction, 2),
             "interval": request.interval,
             "symbol": request.symbol.upper()
