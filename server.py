@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Enable CORS so your Flutter app can talk to the server
+# Enable CORS for the Flutter application
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,21 +17,21 @@ app.add_middleware(
 
 class PredictionRequest(BaseModel):
     symbol: str
-    interval: str  # This tells the AI which timeframe to use
+    interval: str  # Options: '15m', '1d', '2d'
 
 @app.get("/")
 def home():
-    return {"status": "Online", "message": "Multi-Timeframe AI is Active"}
+    return {"status": "Online", "message": "Multi-Interval AI Terminal Active"}
 
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # Determine data period based on interval
-        # 15m needs a short period (1 day), 1d/2d needs a longer period (1 month)
+        # Determine data windows based on selection
+        # 15m needs a narrow 1-day window; 1d/2d needs a wider 1-month window
         fetch_period = "1d" if request.interval == "15m" else "1mo"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
-        # Download data
+        # Download market data
         data = yf.download(
             tickers=request.symbol, 
             period=fetch_period, 
@@ -40,9 +40,9 @@ def predict(request: PredictionRequest):
         )
 
         if data.empty:
-            return {"error": "No market data found for this symbol."}
+            return {"error": "Symbol not found or market closed for this interval."}
 
-        # AI Logic: Predict the next closing price
+        # AI Prediction Logic
         df = data[['Close']].copy()
         df['S_1'] = df['Close'].shift(1)
         df = df.dropna()
@@ -53,7 +53,7 @@ def predict(request: PredictionRequest):
 
         current_price = float(df['Close'].iloc[-1])
         
-        # If interval is '2d', we predict 2 steps ahead
+        # Steps determine how far out the prediction goes (2 steps for '2d')
         steps = 2 if request.interval == "2d" else 1
         prediction = current_price
         for _ in range(steps):
@@ -62,7 +62,8 @@ def predict(request: PredictionRequest):
         return {
             "current_price": round(current_price, 2),
             "prediction": round(prediction, 2),
-            "interval": request.interval
+            "interval": request.interval,
+            "symbol": request.symbol.upper()
         }
     except Exception as e:
         return {"error": str(e)}
