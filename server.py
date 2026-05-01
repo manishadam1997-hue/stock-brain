@@ -26,53 +26,46 @@ def home():
 @app.post("/predict")
 def predict(request: PredictionRequest):
     try:
-        # Data periods optimized for your preferred logic
+        # 1. Official Ticker Search
+        search_results = yf.Search(request.symbol, max_results=1).quotes
+        if not search_results:
+            return {"error": f"No results for '{request.symbol}'"}
+        
+        ticker_symbol = search_results[0]['symbol']
+        stock = yf.Ticker(ticker_symbol)
+
+        # 2. Data Fetching
         fetch_period = "5d" if request.interval == "15m" else "60d"
         fetch_interval = "15m" if request.interval == "15m" else "1d"
         
-        data = yf.download(
-            tickers=request.symbol, 
-            period=fetch_period, 
-            interval=fetch_interval, 
-            progress=False
-        )
+        data = stock.history(period=fetch_period, interval=fetch_interval)
 
         if data.empty:
-            return {"error": "No market data found."}
+            return {"error": "No market data found for this interval."}
 
-        # Handling Multi-Index ticker data
-        if isinstance(data.columns, pd.MultiIndex):
-            df = data['Close'].iloc[:, 0].to_frame()
-            df['Volume'] = data['Volume'].iloc[:, 0]
-        else:
-            df = data[['Close', 'Volume']].copy()
-        
-        df.columns = ['Close', 'Volume']
-
-        # FEATURE ENGINEERING: Price, Volume, and RSI context
+        # 3. Feature Engineering (Price, Volume, and RSI)
+        df = data[['Close', 'Volume']].copy()
         df['RSI'] = 100 - (100 / (1 + (df['Close'].diff().where(df['Close'].diff() > 0, 0).rolling(14).mean() / 
                                       -df['Close'].diff().where(df['Close'].diff() < 0, 0).rolling(14).mean())))
         df['Index'] = np.arange(len(df))
         df = df.dropna()
 
-        # Training on the factors you found most effective: Index, Volume, and RSI
+        # 4. AI Model Training
         features = ['Index', 'Volume', 'RSI']
         X = df[features].values
         y = df['Close'].values
-
         model = LinearRegression().fit(X, y)
 
         current_price = float(df['Close'].iloc[-1])
         avg_volume = float(df['Volume'].mean())
         current_rsi = float(df['RSI'].iloc[-1])
 
-        # Forecast count per interval
+        # 5. Forecast Calculation
         pred_count = 5 if request.interval == "15m" else 3
         future_idx = len(df) + pred_count
-        
         prediction = float(model.predict([[future_idx, avg_volume, current_rsi]])[0])
 
-        # Logic to ensure the prediction shows a distinct move based on RSI
+        # RSI Nudge to ensure a visible market move
         diff = prediction - current_price
         if abs(diff) < (current_price * 0.002):
             nudge = (current_price * 0.01) 
@@ -82,7 +75,7 @@ def predict(request: PredictionRequest):
             "current_price": round(current_price, 2),
             "prediction": round(prediction, 2),
             "interval": request.interval,
-            "symbol": request.symbol.upper()
+            "symbol": ticker_symbol.upper()
         }
     except Exception as e:
-        return {"error": f"AI Error: {str(e)}"}
+        return {"error": str(e)}
